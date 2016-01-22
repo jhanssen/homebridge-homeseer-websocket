@@ -1,0 +1,19 @@
+{
+  "name": "homebridge-homeseer-websocket",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "homebridge": ">=0.2.0",
+    "node": ">4.0.0"
+  },
+  "keywords": [
+    "Home Center",
+    "Siri",
+    "homebridge-plugin",
+    "homekit",
+    "homeseer"
+  ],
+  "dependencies": {
+    "faye-websocket": ""
+  }
+}

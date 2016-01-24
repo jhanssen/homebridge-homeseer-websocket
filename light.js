@@ -85,7 +85,7 @@ HomeSeerLight.prototype = {
 };
 
 module.exports = {
-    Light: HomeSeerLight,
+    HomeSeerLight: HomeSeerLight,
     init: function(service, characteristic) {
         Service = service;
         Characteristic = characteristic;

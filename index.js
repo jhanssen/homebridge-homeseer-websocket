@@ -1,14 +1,20 @@
 /*global require,module*/
 var WebSocket = require('faye-websocket');
-
-var Service, Characteristic, types;
+var DeviceConstructors = Object.create(null);
+var Service, Characteristic, Types;
 var hsDevices = Object.create(null);
 
 module.exports = function(homebridge) {
     Service = homebridge.hap.Service;
     Characteristic = homebridge.hap.Characteristic;
-    types = homebridge.hapLegacyTypes;
+    Types = homebridge.hapLegacyTypes;
     homebridge.registerPlatform("homebridge-homeseer-websocket", "homeseer-websocket", HSPlatform);
+
+    DeviceConstructors["Lightbulb"] = (function() {
+        var hslight = require('./light.js');
+        hslight.init(Service, Characteristic, Types);
+        return hslight.HomeSeerLight;
+    })();
 };
 module.exports.platform = HSPlatform;
 
@@ -17,6 +23,7 @@ function HSPlatform(log, config) {
     this._config = config;
     this._host = config.host;
     this._port = config.port;
+    this._types = config.types;
     // this.username = config.username;
     // this.password = config.password;
     // this.elkEnabled = config.elkEnabled;
@@ -25,107 +32,6 @@ function HSPlatform(log, config) {
     // this.includedScenes = (config.includedScenes==undefined) ? [] : config.includedScenes;
     this.reconnect();
 }
-
-function HomeSeerAccessoryBaseSetup(accessory, hs, id, device) {
-    accessory.log = hs.log;
-    accessory.device = device;
-    accessory.address = id;
-    accessory.name = accessory.device.location2 + " " + accessory.device.location + " " + accessory.device.name;
-    accessory.uuid_base = id;
-    accessory._ws = hs._ws;
-    accessory.request = hs.request.bind(hs);
-
-    hsDevices[id] = accessory;
-}
-
-function HomeSeerLight(hs, id, device) {
-    HomeSeerAccessoryBaseSetup(this, hs, id, device);
-    this.dimmable = this.device.values["1"] === "Dim 1%";
-
-}
-
-HomeSeerLight.prototype = {
-    log: undefined,
-    request: undefined,
-    // _pending: undefined,
-    _getOn: function(callback) {
-        this.log("geton " + this.name);
-        this.log(this.device.value);
-        callback(null, this.device.value.value > 0);
-    },
-    _setOn: function(on, callback) {
-        if (on && this.device.value.value > 0) {
-            callback();
-            return;
-        }
-        if (!on && this.device.value.value === 0) {
-            callback();
-            return;
-        }
-        this.log("seton " + on + " " + this.name);
-        this.request({ type: "set", address: this.address, value: on ? 255 : 0 }, function() {
-            callback();
-        });
-        // this._pending = function(val) {
-        //     callback();
-        // };
-    },
-    _getDim: function(callback) {
-        this.log("getdim " + this.name);
-        this.log(this.device.value);
-        callback(null, this.device.value.value);
-    },
-    _setDim: function(level, callback) {
-        var val = level;
-        if (val > 99)
-            val = 99;
-        if (this.device.value.value === val) {
-            callback();
-            return;
-        }
-        this.log("setdim " + val + " " + this.name);
-        this.request({ type: "set", address: this.address, value: val }, function() {
-            callback();
-        });
-        // this._pending = function(val) {
-        //     callback();
-        // };
-    },
-    identify: function(callback) {
-        callback();
-    },
-    getServices: function() {
-        // {"name":"Front Lights","location":"Outside","location2":"1st floor","userNote":"","value":{"text":"","value":0},"values":{"0":"Off","255":"On"},"changed":"2016-01-19T14:19:04.543574-08:00"}
-        // {"name":"Lights","location":"Stairs","location2":"1st floor","userNote":"","value":{"text":"","value":53},"values":{"0":"Off","1":"Dim 1%","99":"On","255":"On Last Level"},"changed":"2016-01-21T21:51:31.120226-08:00"}
-        var info = new Service.AccessoryInformation();
-        info.setCharacteristic(Characteristic.Manufacturer, "SmartHome");
-        info.setCharacteristic(Characteristic.Model, this.name);
-        info.setCharacteristic(Characteristic.SerialNumber, this.address);
-
-        var light = new Service.Lightbulb();
-        light.getCharacteristic(Characteristic.On).on("set", this._setOn.bind(this));
-        light.getCharacteristic(Characteristic.On).on("get", this._getOn.bind(this));
-        if (this.dimmable) {
-            light.addCharacteristic(Characteristic.Brightness).on("set", this._setDim.bind(this));
-            light.getCharacteristic(Characteristic.Brightness).on("get", this._getDim.bind(this));
-        }
-
-        this.informationService = info;
-        this.lightService = light;
-
-        return [info, light];
-    },
-    update: function(val) {
-        this.device.value = val;
-        // if (this._pending) {
-        //     this._pending(val);
-        //     this._pending = undefined;
-        // } else {
-            this.lightService.setCharacteristic(Characteristic.On, val.value > 0);
-            this.lightService.setCharacteristic(Characteristic.Brightness, val.value);
-        // }
-    }
-};
 
 HSPlatform.prototype = {
     _ws: undefined,
@@ -136,14 +42,30 @@ HSPlatform.prototype = {
     _state: {},
 
     _processDevices(cb) {
+        var typeMatch = function(dev, type) {
+            var k = type.key || "name";
+            if ("regex" in type) {
+                return (dev[k] + "").match(new RegExp(type.regex));
+            } else if ("match" in type) {
+                return (dev[k] + "").indexOf(type.match) !== -1;
+            } else if ("exact" in type) {
+                return dev[k] == type.exact;
+            }
+            return false;
+        };
+
         var devs = this._devices;
         var results = [];
         for (var id in devs) {
-            //this.log("hey, processing device " + id);
-            if (devs[id].name.indexOf("Lights") !== -1) {
-                this.log(JSON.stringify(devs[id]));
-                var dev = new HomeSeerLight(this, id, devs[id]);
-                results.push(dev);
+            // this.log("hey, processing device " + id);
+            // find a type that matches the device
+            for (var tidx = 0; tidx < this._types.length; ++tidx) {
+                if (typeMatch(devs[id], this._types[tidx])) {
+                    // this.log("got device " + this._types[tidx].type);
+                    var dev = new DeviceConstructors[this._types[tidx].type](this, id, devs[id]);
+                    hsDevices[id] = dev;
+                    results.push(dev);
+                }
             }
         }
         cb(results);
@@ -191,10 +113,6 @@ HSPlatform.prototype = {
                     delete that._cbs[data.id];
                     cb(data);
                 }
-            // } else if (data.type === "devices") {
-            //     // update device list and emit
-            //     that._devices = data.devices;
-            //     that._callOn("devices", data.devices);
             } else if (data.type === "change") {
                 if (data.change.address in hsDevices) {
                     var dev = hsDevices[data.change.address];

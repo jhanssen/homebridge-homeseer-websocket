@@ -26,26 +26,28 @@ function HSPlatform(log, config) {
     this.reconnect();
 }
 
-function HomeSeerAccessoryBaseSetup(accessory, log, id, device, ws) {
-    accessory.log = log;
+function HomeSeerAccessoryBaseSetup(accessory, hs, id, device) {
+    accessory.log = hs.log;
     accessory.device = device;
     accessory.address = id;
     accessory.name = accessory.device.location2 + " " + accessory.device.location + " " + accessory.device.name;
     accessory.uuid_base = id;
-    accessory._ws = ws;
+    accessory._ws = hs._ws;
+    accessory.request = hs.request.bind(hs);
 
     hsDevices[id] = accessory;
 }
 
-function HomeSeerLight(log, id, device, ws) {
-    HomeSeerAccessoryBaseSetup(this, log, id, device, ws);
+function HomeSeerLight(hs, id, device) {
+    HomeSeerAccessoryBaseSetup(this, hs, id, device);
     this.dimmable = this.device.values["1"] === "Dim 1%";
 
 }
 
 HomeSeerLight.prototype = {
     log: undefined,
-    _pending: undefined,
+    request: undefined,
+    // _pending: undefined,
     _getOn: function(callback) {
         this.log("geton " + this.name);
         this.log(this.device.value);
@@ -61,11 +63,12 @@ HomeSeerLight.prototype = {
             return;
         }
         this.log("seton " + on + " " + this.name);
-        var req = { type: "set", address: this.address, value: on ? 255 : 0 };
-        this._ws.send(JSON.stringify(req));
-        this._pending = function(val) {
+        this.request({ type: "set", address: this.address, value: on ? 255 : 0 }, function() {
             callback();
-        };
+        });
+        // this._pending = function(val) {
+        //     callback();
+        // };
     },
     _getDim: function(callback) {
         this.log("getdim " + this.name);
@@ -81,12 +84,12 @@ HomeSeerLight.prototype = {
             return;
         }
         this.log("setdim " + val + " " + this.name);
-        var req = { type: "set", address: this.address, value: val };
-        this.log(JSON.stringify(req));
-        this._ws.send(JSON.stringify(req));
-        this._pending = function(val) {
+        this.request({ type: "set", address: this.address, value: val }, function() {
             callback();
-        };
+        });
+        // this._pending = function(val) {
+        //     callback();
+        // };
     },
     identify: function(callback) {
         callback();
@@ -114,13 +117,13 @@ HomeSeerLight.prototype = {
     },
     update: function(val) {
         this.device.value = val;
-        if (this._pending) {
-            this._pending(val);
-            this._pending = undefined;
-        } else {
+        // if (this._pending) {
+        //     this._pending(val);
+        //     this._pending = undefined;
+        // } else {
             this.lightService.setCharacteristic(Characteristic.On, val.value > 0);
             this.lightService.setCharacteristic(Characteristic.Brightness, val.value);
-        }
+        // }
     }
 };
 
@@ -130,6 +133,22 @@ HSPlatform.prototype = {
     _cbs: Object.create(null),
     _ons: Object.create(null),
     _devices: undefined,
+    _state: {},
+
+    _processDevices(cb) {
+        var devs = this._devices;
+        var results = [];
+        for (var id in devs) {
+            //this.log("hey, processing device " + id);
+            if (devs[id].name.indexOf("Lights") !== -1) {
+                this.log(JSON.stringify(devs[id]));
+                var dev = new HomeSeerLight(this, id, devs[id]);
+                results.push(dev);
+            }
+        }
+        cb(results);
+    },
+
     reconnect: function reconnect() {
         var host = this._host;
         if (this._port !== undefined)
@@ -138,7 +157,14 @@ HSPlatform.prototype = {
         var that = this;
         this._ws.on('open', function(event) {
             that.log("got open, requesting devices");
-            that.request("devices");
+            that.request("devices", function(data) {
+                that.log(data);
+                that._devices = data.devices;
+                if (that._state.accessoriesCb) {
+                    that._processDevices(that._state.accessoriesCb);
+                    delete that._state.accessoriesCb;
+                }
+            });
         });
         this._ws.on('message', function(event) {
             that.log("got message");
@@ -148,6 +174,7 @@ HSPlatform.prototype = {
                 that.log(e);
                 return;
             }
+            that.log(data);
             if (data.hasOwnProperty("id")) {
                 if (data.hasOwnProperty("type") && data.hasOwnProperty("data")) {
                     if (data.type === "request") {
@@ -164,10 +191,10 @@ HSPlatform.prototype = {
                     delete that._cbs[data.id];
                     cb(data);
                 }
-            } else if (data.type === "devices") {
-                // update device list and emit
-                that._devices = data.devices;
-                that._callOn("devices", data.devices);
+            // } else if (data.type === "devices") {
+            //     // update device list and emit
+            //     that._devices = data.devices;
+            //     that._callOn("devices", data.devices);
             } else if (data.type === "change") {
                 if (data.change.address in hsDevices) {
                     var dev = hsDevices[data.change.address];
@@ -193,40 +220,27 @@ HSPlatform.prototype = {
     on: function(type, cb) {
         this._ons[type] = cb;
     },
-    request: function request(name, args, cb) {
-        var req = { type: name };
-        if (args !== undefined)
-            req.args = args;
+    request: function request(req, cb) {
+        var r;
+        if (typeof req === "object") {
+            r = req;
+        } else {
+            r = { type: req };
+        }
         if (cb) {
             var id = ++this._id;
-            req.id = id;
+            r.id = id;
             this._cbs[id] = cb;
         }
-        var data = JSON.stringify(req);
+        var data = JSON.stringify(r);
         this.log("sending " + data);
         this._ws.send(data);
     },
     accessories: function(cb) {
-        var that = this;
-        var processDevices = function(devs, cb) {
-            var results = [];
-            for (var id in devs) {
-                //that.log("hey, processing device " + id);
-                if (devs[id].name.indexOf("Lights") !== -1) {
-                    that.log(JSON.stringify(devs[id]));
-                    var dev = new HomeSeerLight(that.log, id, devs[id], that._ws);
-                    results.push(dev);
-                }
-            }
-            cb(results);
-        };
-
         if (this._devices !== undefined) {
-            processDevices(this._devices, cb);
+            this._processDevices(cb);
         } else {
-            this.on("devices", function(devs) {
-                processDevices(devs, cb);
-            });
+            this._state.accessoriesCb = cb;
         }
     }
 };

@@ -23,7 +23,7 @@ var match = function(dev, type) {
 };
 
 var find = function(devices, type) {
-    for (var i = 0; i < devices; ++i) {
+    for (var i = 0; i < devices.length; ++i) {
         if (match(devices[i], type))
             return devices[i];
     }

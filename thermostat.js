@@ -1,6 +1,5 @@
 /*global module,require*/
 
-var utils = require("./utils.js");
 var Service, Characteristic;
 
 function HomeSeerThermostat(hs, id, device, type) {
@@ -19,6 +18,7 @@ function HomeSeerThermostat(hs, id, device, type) {
 HomeSeerThermostat.prototype = {
     log: undefined,
     request: undefined,
+    utils: require("./utils.js"),
     _updates: Object.create(null),
 
     _processType: function() {
@@ -26,19 +26,30 @@ HomeSeerThermostat.prototype = {
             for (var i = 0; i < this.type.characteristics.length; ++i) {
                 var c = this.type.characteristics[i];
                 if ("choose" in c) {
-                    c.choose = new Function(c.choose).bind(this);
+                    if (!(c.choose instanceof Function))
+                        c.choose = (new Function(c.choose)).bind(this);
                 }
                 if ("convert" in c) {
-                    c.convert.to = new Function(c.convert.to).bind(this);
-                    c.convert.from = new Function(c.convert.from).bind(this);
+                    if (!(c.convert.to instanceof Function))
+                        c.convert.to = (new Function(c.convert.to)).bind(this);
+                    if (!(c.convert.from instanceof Function))
+                        c.convert.from = (new Function(c.convert.from)).bind(this);
                 }
             }
         }
     },
 
     _choose: function(children, func) {
+        // this.log("choosing");
+        // this.log(children);
+        // this.log(typeof func);
         if (children instanceof Array) {
             if (children.length > 1) {
+                if (func === undefined) {
+                    this.log("Can't choose, function undefined");
+                    this.log(children);
+                    return children[0];
+                }
                 for (var i = 0; i < children.length; ++i) {
                     if (func(children[i]))
                         return children[i];
@@ -55,6 +66,8 @@ HomeSeerThermostat.prototype = {
             value = convert.to(chosen.value.value);
         else
             value = chosen.value.value;
+        this.log("get => " + value);
+        this.log(chosen);
         callback(null, value);
     },
     _set: function(children, choose, convert, value, callback) {
@@ -67,6 +80,10 @@ HomeSeerThermostat.prototype = {
             callback();
         });
     },
+    _displayUnits: function(callback) {
+        callback(null, 1);
+    },
+
     identify: function(callback) {
         callback();
     },
@@ -92,18 +109,25 @@ HomeSeerThermostat.prototype = {
             if (characteristic.accessors.indexOf("set") !== -1) {
                 service
                     .getCharacteristic(Characteristic[characteristic.type])
-                    .on("get", this._set.bind(this, children, characteristic.choose, characteristic.convert));
+                    .on("set", this._set.bind(this, children, characteristic.choose, characteristic.convert));
             }
             for (var i = 0; i < children.length; ++i) {
                 var setter = function(val) {
+                    console.log("updating " + JSON.stringify(val));
+                    console.log(this);
                     this.value = val;
 
                     var value = val.value;
                     if (characteristic.convert)
                         value = characteristic.convert.to(value);
+                    console.log("hey there " + characteristic.type);
+                    console.log(value);
                     service.setCharacteristic(Characteristic[characteristic.type], value);
                 };
-                this._updates[children[i].address] = setter.bind(children[i]);
+                if (!(children[i].address in this._updates))
+                    this._updates[children[i].address] = [setter.bind(children[i])];
+                else
+                    this._updates[children[i].address].push(setter.bind(children[i]));
             }
         };
 
@@ -115,14 +139,21 @@ HomeSeerThermostat.prototype = {
             var candidates = [];
             var children = this.device.associations;
             for (var j = 0; j < children.length; ++j) {
-                if (utils.match(children[j], characteristic)) {
+                if (this.utils.match(children[j], characteristic)) {
                     candidates.push(children[j]);
                 }
             }
             if (candidates.length > 0) {
+                this.log("setting up");
+                this.log(characteristic);
+                this.log(candidates);
+                this.log("---");
                 setupCharacteristic.call(this, thermostat, characteristic, candidates);
             }
         }
+        thermostat
+            .getCharacteristic(Characteristic.TemperatureDisplayUnits)
+            .on('get', this._displayUnits.bind(this));
 
         this.informationService = info;
         this.thermostatService = thermostat;
@@ -130,8 +161,10 @@ HomeSeerThermostat.prototype = {
         return [info, thermostat];
     },
     update: function(addr, val) {
-        if (addr in this._updates)
-            this._updates[addr](val);
+        if (addr in this._updates) {
+            for (var i = 0; i < this._updates[addr].length; ++i)
+                this._updates[addr][i](val);
+        }
     }
 };
 

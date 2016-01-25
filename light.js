@@ -77,7 +77,7 @@ HomeSeerLight.prototype = {
 
         return [info, light];
     },
-    update: function(val) {
+    update: function(addr, val) {
         this.device.value = val;
         this.lightService.setCharacteristic(Characteristic.On, val.value > 0);
         this.lightService.setCharacteristic(Characteristic.Brightness, val.value);

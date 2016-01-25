@@ -1,5 +1,6 @@
 /*global require,module*/
-var WebSocket = require('faye-websocket');
+var WebSocket = require("faye-websocket");
+var utils = require("./utils.js");
 var DeviceConstructors = Object.create(null);
 var Service, Characteristic, Types;
 var hsDevices = Object.create(null);
@@ -11,9 +12,14 @@ module.exports = function(homebridge) {
     homebridge.registerPlatform("homebridge-homeseer-websocket", "homeseer-websocket", HSPlatform);
 
     DeviceConstructors["Lightbulb"] = (function() {
-        var hslight = require('./light.js');
+        var hslight = require("./light.js");
         hslight.init(Service, Characteristic, Types);
         return hslight.HomeSeerLight;
+    })();
+    DeviceConstructors["Thermostat"] = (function() {
+        var hslight = require("./thermostat.js");
+        hslight.init(Service, Characteristic, Types);
+        return hslight.HomeSeerThermostat;
     })();
 };
 module.exports.platform = HSPlatform;
@@ -33,6 +39,13 @@ function HSPlatform(log, config) {
     this.reconnect();
 }
 
+HSPlatform.Relationship = {
+    Parent: 0,
+    Child: 1,
+    Standalone: 2,
+    NotSet: 3
+};
+
 HSPlatform.prototype = {
     _ws: undefined,
     _id: 0,
@@ -41,29 +54,28 @@ HSPlatform.prototype = {
     _devices: undefined,
     _state: {},
 
-    _processDevices(cb) {
-        var typeMatch = function(dev, type) {
-            var k = type.key || "name";
-            if ("regex" in type) {
-                return (dev[k] + "").match(new RegExp(type.regex));
-            } else if ("match" in type) {
-                return (dev[k] + "").indexOf(type.match) !== -1;
-            } else if ("exact" in type) {
-                return dev[k] == type.exact;
-            }
-            return false;
-        };
+    get devices() { return this._devices; },
 
+    _processDevices(cb) {
         var devs = this._devices;
         var results = [];
         for (var id in devs) {
             // this.log("hey, processing device " + id);
             // find a type that matches the device
             for (var tidx = 0; tidx < this._types.length; ++tidx) {
-                if (typeMatch(devs[id], this._types[tidx])) {
+                if (utils.match(devs[id], this._types[tidx])) {
                     // this.log("got device " + this._types[tidx].type);
-                    var dev = new DeviceConstructors[this._types[tidx].type](this, id, devs[id]);
+                    var dev = new DeviceConstructors[this._types[tidx].type](this, id, devs[id], this._types[tidx]);
                     hsDevices[id] = dev;
+                    // also add ourselves as the device for all children if they haven't added themselves yet
+                    if (devs[id].relationship === HSPlatform.Relationship.Parent) {
+                        for (var cidx = 0; cidx < devs[id].associations.length; ++cidx) {
+                            var addr = devs[id].associations[cidx].address;
+                            if (!(addr in hsDevices))
+                                hsDevices[addr] = dev;
+                        }
+                    }
+
                     results.push(dev);
                 }
             }
@@ -80,7 +92,17 @@ HSPlatform.prototype = {
         this._ws.on('open', function(event) {
             that.log("got open, requesting devices");
             that.request("devices", function(data) {
-                that.log(data);
+                that.log(JSON.stringify(data.devices, 0, 4));
+
+                // process associations
+                for (var id in data.devices) {
+                    var dev = data.devices[id];
+                    for (var i = 0; i < dev.associations.length; ++i) {
+                        dev.associations[i] = data.devices[dev.associations[i]];
+                    }
+                    dev.address = id;
+                }
+
                 that._devices = data.devices;
                 if (that._state.accessoriesCb) {
                     that._processDevices(that._state.accessoriesCb);
@@ -116,7 +138,7 @@ HSPlatform.prototype = {
             } else if (data.type === "change") {
                 if (data.change.address in hsDevices) {
                     var dev = hsDevices[data.change.address];
-                    dev.update(data.change.value);
+                    dev.update(data.change.address, data.change.value);
                 }
             }
         });

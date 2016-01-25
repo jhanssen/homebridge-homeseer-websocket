@@ -29,6 +29,10 @@ HomeSeerThermostat.prototype = {
                     if (!(c.choose instanceof Function))
                         c.choose = (new Function(c.choose)).bind(this);
                 }
+                if ("use" in c) {
+                    if (!(c.use instanceof Function))
+                        c.use = (new Function(c.use)).bind(this);
+                }
                 if ("convert" in c) {
                     if (!(c.convert.to instanceof Function))
                         c.convert.to = (new Function(c.convert.to)).bind(this);
@@ -70,13 +74,16 @@ HomeSeerThermostat.prototype = {
         this.log(chosen);
         callback(null, value);
     },
-    _set: function(children, choose, convert, value, callback) {
-        var chosen = this._choose(children, choose);
+    _set: function(children, characteristic, value, callback) {
+        var chosen = this._choose(children, characteristic.choose);
         if (value == chosen.value.value)
             return;
-        if (convert)
-            value = convert.from(value);
-        this.request({ type: "set", address: chosen.address, value: value }, function() {
+        if (characteristic.convert)
+            value = characteristic.convert.from(value);
+        var req = { type: "set", address: chosen.address, value: value };
+        if (characteristic.use)
+            req.use = characteristic.use();
+        this.request(req, function() {
             callback();
         });
     },
@@ -109,7 +116,7 @@ HomeSeerThermostat.prototype = {
             if (characteristic.accessors.indexOf("set") !== -1) {
                 service
                     .getCharacteristic(Characteristic[characteristic.type])
-                    .on("set", this._set.bind(this, children, characteristic.choose, characteristic.convert));
+                    .on("set", this._set.bind(this, children, characteristic));
             }
             for (var i = 0; i < children.length; ++i) {
                 var setter = function(val) {
